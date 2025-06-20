@@ -1,0 +1,86 @@
+name: Patch v7 - x86 ISO (Fixed Version)
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+env:
+  MIKRO_NPK_SIGN_PUBLIC_KEY: C293CED638A2A33C681FC8DE98EE26C54EADC5390C2DFCE197D35C83C416CF59
+  MIKRO_LICENSE_PUBLIC_KEY: 8E1067E4305FCDC0CFBF95C10F96E5DFE8C49AEF486BD1A4E2E96C27F01E3E32
+  CUSTOM_NPK_SIGN_PRIVATE_KEY: 7D008D9B80B036FB0205601FEE79D550927EBCA937B7008CC877281F2F8AC640
+  CUSTOM_NPK_SIGN_PUBLIC_KEY: 28F886E32C141123126CFBCAD56766E99D1720CEB1F12BE2468BEBE7662FBEDB
+  CUSTOM_LICENSE_PRIVATE_KEY: 9DBC845E9018537810FDAE62824322EEE1B12BAD81FCA28EC295FB397C61CE0B
+  CUSTOM_LICENSE_PUBLIC_KEY: 723A34A6E3300F23E4BAA06156B9327514AEC170732655F16E04C17928DD770F
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [x86]
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.x'
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y mkisofs xorriso qemu-utils extlinux --no-install-recommends
+        sudo pip install -r requirements.txt
+
+    - name: Set fixed version
+      id: set_version
+      run: |
+        echo "LATEST_VERSION=7.19.2" >> $GITHUB_ENV
+        echo "ISO_URL=https://download.mikrotik.com/routeros/7.19.2/mikrotik-7.19.2.iso"  >> $GITHUB_ENV
+        echo "has_new_version=true" >> $GITHUB_OUTPUT
+
+    - name: Download mikrotik-7.19.2.iso
+      run: |
+        sudo curl -s -o mikrotik.iso ${{ env.ISO_URL }}
+
+    - name: Patch mikrotik-7.19.2.iso
+      run: |
+        sudo mkdir iso
+        sudo mount -o loop,ro mikrotik.iso iso/
+        sudo mkdir new_iso
+        sudo cp -r iso/* new_iso/
+        sudo rsync -a iso/ new_iso/
+        sudo umount iso/
+        sudo rm -rf iso/
+        NPK_FILES=$(find new_iso/*.npk)
+        for file in $NPK_FILES; do
+          sudo -E python3 patch.py npk $file
+        done
+        sudo mkdir efiboot
+        sudo mount -o loop new_iso/efiboot.img efiboot/
+        sudo -E python3 patch.py kernel efiboot/linux.x86_64
+        sudo cp efiboot/linux.x86_64 new_iso/isolinux/linux
+        sudo umount efiboot/
+        sudo mkisofs -o mikrotik-7.19.2-patched.iso \
+                     -V "MikroTik 7.19.2" \
+                     -sysid "" -preparer "MiKroTiK" \
+                     -publisher "" -A "MiKroTiK RouterOS" \
+                     -input-charset utf-8 \
+                     -b isolinux/isolinux.bin \
+                     -c isolinux/boot.cat \
+                     -no-emul-boot \
+                     -boot-load-size 4 \
+                     -boot-info-table \
+                     -eltorito-alt-boot \
+                     -e efiboot.img \
+                     -no-emul-boot \
+                     -R -J \
+                     new_iso/
+        sudo rm -rf new_iso/
+        sudo rm -rf efiboot/
+
+    - name: Upload ISO as Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: mikrotik-7.19.2-x86-patched
+        path: mikrotik-7.19.2-patched.iso
